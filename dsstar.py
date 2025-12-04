@@ -25,7 +25,7 @@ class DSConfig:
     run_id: str = None
     max_refinement_rounds: int = 5
     api_key: Optional[str] = None
-    model_name: str = 'gemini-2.5-flash'
+    model_name: str = None
     interactive: bool = False
     auto_debug: bool = True
     # debug attempts defaults to inf for backwards compatibility
@@ -40,8 +40,6 @@ class DSConfig:
     def __post_init__(self):
         if self.run_id is None:
             self.run_id = datetime.now().strftime("%Y%m%d_%H%M%S") + f"_{uuid.uuid4().hex[:6]}"
-        if self.api_key is None:
-            self.api_key = os.environ.get("GEMINI_API_KEY")
         if self.agent_models is None:
             self.agent_models = {}
 
@@ -299,26 +297,7 @@ class DS_STAR_Agent:
     def _call_model(self, agent_name: str, prompt: str) -> str:
         """Call the appropriate model provider for the agent."""
         try:
-            provider = self.providers.get(agent_name)
-            if not provider:
-                # Fallback to default if agent name not found
-                default_model = self.config.model_name
-                # Re-use the logic to get provider
-                # For simplicity, just assume Gemini fallback for now or duplicate logic?
-                # Let's duplicate for safety but ideally refactor.
-                if default_model.startswith("gpt") or default_model.startswith("o1"):
-                    provider_cls = OpenAIProvider
-                else:
-                    provider_cls = GeminiProvider
-                
-                dummy = provider_cls(api_key="dummy", model_name="dummy")
-                env_var = dummy.env_var_name
-                api_key = self.config.api_key or os.environ.get(env_var)
-                
-                if not api_key:
-                     raise ValueError(f"API Key not found for fallback provider ({env_var}).")
-                provider = provider_cls(api_key, default_model)
-                
+            provider = self.providers[agent_name]
             response_text = provider.generate_content(prompt)
             self.controller.logger.info(f"[{agent_name}] Response received ({len(response_text)} chars)")
             return response_text
@@ -386,6 +365,7 @@ class DS_STAR_Agent:
             self.controller.logger.warning("Debugging...")
             code = self._debug_code(code, error, data_desc, data_files)
             exec_result, error = self._execute_code(code, data_files)
+            attempts += 1
 
         if error:
             self.controller.logger.fatal(f"Execution error: {error}")
@@ -660,7 +640,7 @@ def main():
         'run_id': args.resume or config_defaults.get('run_id'),
         'interactive': args.interactive or config_defaults.get('interactive', False),
         'max_refinement_rounds': args.max_rounds or config_defaults.get('max_refinement_rounds', 5),
-        'model_name': config_defaults.get('model_name', 'gemini-1.5-flash'),
+        'model_name': config_defaults.get('model_name'),
         'preserve_artifacts': config_defaults.get('preserve_artifacts', True)
     }
     
@@ -668,6 +648,8 @@ def main():
     config_params = {k: v for k, v in config_params.items() if v is not None}
     
     config = DSConfig(**config_params)
+    if not config.model_name:
+        parser.error("Model name must be specified via config file.")
     
     agent = DS_STAR_Agent(config)
     
