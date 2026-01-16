@@ -10,14 +10,16 @@ import atexit
 import yaml
 from dataclasses import dataclass, asdict, field
 from datetime import datetime
-from provider import ModelProvider, GeminiProvider, OllamaProvider, OpenAIProvider
-from evaluator import load_evaluator
+from importlib import resources
+
+from .provider import ModelProvider, GeminiProvider, OllamaProvider, OpenAIProvider
+from .evaluator import load_evaluator
 
 # =============================================================================
 # CONFIGURATION & PROMPT TEMPLATES
 # =============================================================================
 
-with open("prompt.yaml", "r") as f:
+with resources.files("ds_star").joinpath("prompt.yaml").open("r", encoding="utf-8") as f:
     PROMPT_TEMPLATES = yaml.safe_load(f)
 
 @dataclass

@@ -3,8 +3,9 @@ max_refinement_rounds: 5
 preserve_artifacts: true
 data_files:
   - "hello.txt"
+data_dir: "examples/data"
 query: "Print a single number close to 42."
-evaluator: "toy_evaluator:ToyEvaluator"
+evaluator: "examples.toy_evaluator:ToyEvaluator"
 evaluator_kwargs:
   target: 42
   tolerance: 0.5

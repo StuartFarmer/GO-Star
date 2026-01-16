@@ -9,11 +9,11 @@ This toy run proves the evaluator JSON and verifier goals wiring is working.
 
 ## Run
 ```bash
-uv run python dsstar.py --config toy_config.yaml
+uv run dsstar --config examples/toy_config.yaml
 ```
 Note: requires a configured model API key (see README).
 
 ## Files
-- data/hello.txt: placeholder data file for the analyzer
-- toy_evaluator.py: evaluator that scores proximity to target
-- toy_config.yaml: config with goals and evaluator settings
+- examples/data/hello.txt: placeholder data file for the analyzer
+- examples/toy_evaluator.py: evaluator that scores proximity to target
+- examples/toy_config.yaml: config with goals and evaluator settings

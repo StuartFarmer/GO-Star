@@ -33,9 +33,8 @@ All artifacts for each run are stored in the `runs/` directory, organized by `ru
 
 ```
 /
-├─── dsstar.py               # Main script containing the agent logic and CLI
+├─── src/ds_star/            # Package source (agent logic, CLI, prompts)
 ├─── config.yaml             # Main configuration file
-├─── prompt.yaml             # Prompts for the different AI agents
 ├─── pyproject.toml          # Project metadata and dependencies (uv format)
 ├─── uv.lock                 # Locked dependency versions for reproducibility
 ├─── .python-version         # Python version specification for uv
@@ -107,7 +106,7 @@ To start a new analysis, you need to provide the data files and a query.
 
 Using uv:
 ```bash
-uv run python dsstar.py --data-files file1.xlsx file2.xlsx --query "What is the total sales for each department?"
+uv run dsstar --data-files file1.xlsx file2.xlsx --query "What is the total sales for each department?"
 ```
 
 ### Resuming a Run
@@ -115,7 +114,7 @@ uv run python dsstar.py --data-files file1.xlsx file2.xlsx --query "What is the 
 If a run was interrupted, you can resume it using its `run_id`.
 
 ```bash
-uv run python dsstar.py --resume <run_id>
+uv run dsstar --resume <run_id>
 ```
 
 ### Editing Code During a Run
@@ -123,7 +122,7 @@ uv run python dsstar.py --resume <run_id>
 You can manually edit the last generated piece of code and re-run it. This is useful for manual debugging or tweaking the agent's logic.
 
 ```bash
-uv run python dsstar.py --edit-last --resume <run_id>
+uv run dsstar --edit-last --resume <run_id>
 ```
 This will open the last code file in your default text editor (`nano`, `vim`, etc.). After you save and close the editor, the script will re-execute the modified code.
 
@@ -132,7 +131,7 @@ This will open the last code file in your default text editor (`nano`, `vim`, et
 To review each step before proceeding, use the interactive flag.
 
 ```bash
-uv run python dsstar.py --interactive --data-files ... --query "..."
+uv run dsstar --interactive --data-files ... --query "..."
 ```
 
 ## UV Package Manager
