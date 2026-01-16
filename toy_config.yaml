@@ -1,0 +1,14 @@
+model_name: "gemini-2.5-flash"
+max_refinement_rounds: 5
+preserve_artifacts: true
+data_files:
+  - "hello.txt"
+query: "Print a single number close to 42."
+evaluator: "toy_evaluator:ToyEvaluator"
+evaluator_kwargs:
+  target: 42
+  tolerance: 0.5
+verifier_goals: |
+  Lexicographic priorities:
+  1) minimize abs_error
+  2) keep abs_error within tolerance if possible
