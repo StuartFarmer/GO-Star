@@ -42,6 +42,9 @@ class DSConfig:
     evaluator: Optional[str] = None
     evaluator_kwargs: Dict[str, Any] = field(default_factory=dict)
     verifier_goals: Optional[str] = None
+    problem_context: Optional[str] = None
+    evaluator_runs_code: bool = False
+    evaluator_python: Optional[str] = None
     
     def __post_init__(self):
         if self.run_id is None:
@@ -250,7 +253,7 @@ class DS_STAR_Agent:
         default_model = config.model_name
         
         # List of known agents
-        agents = ["ANALYZER", "PLANNER", "CODER", "VERIFIER", "ROUTER", "DEBUGGER", "FINALYZER"]
+        agents = ["PLANNER", "CODER", "VERIFIER", "ROUTER", "DEBUGGER", "FINALYZER"]
         
         def get_provider_for_model(model_name: str, config: DSConfig) -> ModelProvider:
             provider_cls = None
@@ -365,14 +368,20 @@ class DS_STAR_Agent:
         except Exception as e:
             return "", f"Execution error: {str(e)}"
 
-    def _execute_and_debug_code(self, code: str, data_files: List[str], data_desc: str) -> str:
+    def _execute_and_debug_code(
+        self,
+        code: str,
+        data_files: List[str],
+        data_desc: str,
+        problem_context: str,
+    ) -> str:
         exec_result, error = self._execute_code(code, data_files)
 
         # Debug loop
         attempts = 0
         while error and self.config.auto_debug and attempts < self.config.debug_attempts:
             self.controller.logger.warning("Debugging...")
-            code = self._debug_code(code, error, data_desc, data_files)
+            code = self._debug_code(code, error, data_desc, data_files, problem_context)
             exec_result, error = self._execute_code(code, data_files)
             attempts += 1
 
@@ -382,10 +391,16 @@ class DS_STAR_Agent:
 
     def _normalize_eval_result(self, eval_result: Any) -> Dict[str, Any]:
         if isinstance(eval_result, dict):
-            return {
-                "raw_text": json.dumps(eval_result, ensure_ascii=True),
-                "parsed": eval_result,
-            }
+            normalized = dict(eval_result)
+            parsed = normalized.get("parsed") or normalized.get("parsed_output") or normalized.get("json")
+            raw_text = normalized.get("raw_text")
+            if raw_text is None:
+                raw_text = normalized.get("stdout")
+            if raw_text is None:
+                raw_text = json.dumps(eval_result, ensure_ascii=True)
+            normalized["raw_text"] = raw_text
+            normalized["parsed"] = parsed
+            return normalized
         if isinstance(eval_result, str):
             parsed = None
             try:
@@ -395,13 +410,27 @@ class DS_STAR_Agent:
             return {"raw_text": eval_result, "parsed": parsed}
         return {"raw_text": str(eval_result), "parsed": None}
 
-    def _evaluate_candidate(self, code: str, result: str, plan: List[str], query: str, data_desc: str) -> Dict[str, Any]:
+    def _evaluate_candidate(
+        self,
+        code: str,
+        result: str,
+        plan: List[str],
+        query: str,
+        data_desc: str,
+        data_files: Optional[List[str]] = None,
+        problem_context: str = "",
+    ) -> Dict[str, Any]:
         context = {
             "code": code,
             "result": result,
             "plan": plan,
             "query": query,
             "data_desc": data_desc,
+            "data_files": data_files or [],
+            "problem_context": problem_context,
+            "cwd": str(Path.cwd()),
+            "execution_timeout": self.config.execution_timeout,
+            "python_executable": self.config.evaluator_python,
         }
         try:
             eval_result = self.evaluator.evaluate(context)
@@ -410,9 +439,39 @@ class DS_STAR_Agent:
             self.controller.logger.error(f"Evaluator error: {e}")
             return {"raw_text": "", "parsed": None}
 
+    def _execute_with_evaluator(
+        self,
+        code: str,
+        data_files: List[str],
+        data_desc: str,
+        plan: List[str],
+        query: str,
+        problem_context: str,
+    ) -> Tuple[str, Dict[str, Any]]:
+        attempts = 0
+        while True:
+            eval_result = self._evaluate_candidate(
+                code,
+                "",
+                plan,
+                query,
+                data_desc,
+                data_files=data_files,
+                problem_context=problem_context,
+            )
+            error = eval_result.get("error") or eval_result.get("stderr")
+            if not error or not self.config.auto_debug or attempts >= self.config.debug_attempts:
+                return eval_result.get("raw_text", ""), eval_result
+            self.controller.logger.warning("Evaluator execution error; debugging...")
+            code = self._debug_code(code, error, data_desc, data_files, problem_context)
+            attempts += 1
 
-    def analyze_data(self, filename: str) -> Dict[str, str]:
-        prompt = PROMPT_TEMPLATES["analyzer"].format(filename=filename)
+
+    def analyze_data(self, filename: str, problem_context: str) -> Dict[str, str]:
+        prompt = PROMPT_TEMPLATES["analyzer"].format(
+            filename=filename,
+            problem_context=problem_context,
+        )
         
         result = self.controller.execute_step(
             "analyzer",
@@ -422,19 +481,34 @@ class DS_STAR_Agent:
         )
         
         code = self._extract_code_block(result)
-        exec_result = self._execute_and_debug_code(code, [filename], data_desc="")
+        exec_result = self._execute_and_debug_code(code, [filename], data_desc="", problem_context=problem_context)
         
         return {"code": code, "result": exec_result, "filename": filename}
 
-    def plan_next_step(self, query: str, data_desc: str, current_plan: List[str], last_result: Optional[str]) -> str:
+    def plan_next_step(
+        self,
+        query: str,
+        data_desc: str,
+        current_plan: List[str],
+        last_result: Optional[str],
+        problem_context: str,
+    ) -> str:
         if not current_plan:
-            prompt = PROMPT_TEMPLATES["planner_init"].format(question=query, summaries=data_desc)
+            prompt = PROMPT_TEMPLATES["planner_init"].format(
+                question=query,
+                summaries=data_desc,
+                problem_context=problem_context,
+            )
             step_type = "planner_init"
         else:
             plan_str = "\n".join(f"{i+1}. {step}" for i, step in enumerate(current_plan))
             prompt = PROMPT_TEMPLATES["planner_next"].format(
-                question=query, summaries=data_desc,
-                plan=plan_str, result=last_result, current_step=current_plan[-1]
+                question=query,
+                summaries=data_desc,
+                plan=plan_str,
+                result=last_result,
+                current_step=current_plan[-1],
+                problem_context=problem_context,
             )
             step_type = "planner_next"
         
@@ -446,17 +520,28 @@ class DS_STAR_Agent:
             plan_length=len(current_plan)
         )
 
-    def generate_code(self, plan: List[str], data_desc: str, base_code: Optional[str] = None) -> str:
+    def generate_code(
+        self,
+        plan: List[str],
+        data_desc: str,
+        base_code: Optional[str] = None,
+        problem_context: str = "",
+    ) -> str:
         plan_str = "\n".join(f"{i+1}. {step}" for i, step in enumerate(plan))
         
         if not base_code:
             prompt = PROMPT_TEMPLATES["coder_init"].format(
-                summaries=data_desc, plan=plan_str
+                summaries=data_desc,
+                plan=plan_str,
+                problem_context=problem_context,
             )
         else:
             prompt = PROMPT_TEMPLATES["coder_next"].format(
-                summaries=data_desc, base_code=base_code,
-                plan=plan_str, current_plan=plan[-1]
+                summaries=data_desc,
+                base_code=base_code,
+                plan=plan_str,
+                current_plan=plan[-1],
+                problem_context=problem_context,
             )
         
         result = self.controller.execute_step(
@@ -479,6 +564,7 @@ class DS_STAR_Agent:
         eval_result: Dict[str, Any],
         goals: Optional[str],
         prev_eval_result: Optional[Dict[str, Any]] = None,
+        problem_context: str = "",
     ) -> str:
         plan_str = "\n".join(f"{i+1}. {step}" for i, step in enumerate(plan))
         goals_str = goals or "No explicit goals provided."
@@ -496,6 +582,7 @@ class DS_STAR_Agent:
             goals=goals_str,
             eval_result=eval_text,
             prev_eval_result=prev_eval_text,
+            problem_context=problem_context,
         )
         
         return self.controller.execute_step(
@@ -505,11 +592,22 @@ class DS_STAR_Agent:
             plan_length=len(plan)
         ).strip()
 
-    def route_plan(self, plan: List[str], query: str, result: str, data_desc: str) -> str:
+    def route_plan(
+        self,
+        plan: List[str],
+        query: str,
+        result: str,
+        data_desc: str,
+        problem_context: str,
+    ) -> str:
         plan_str = "\n".join(f"{i+1}. {step}" for i, step in enumerate(plan))
         prompt = PROMPT_TEMPLATES["router"].format(
-            question=query, summaries=data_desc,
-            plan=plan_str, result=result, current_step=plan[-1]
+            question=query,
+            summaries=data_desc,
+            plan=plan_str,
+            result=result,
+            current_step=plan[-1],
+            problem_context=problem_context,
         )
         
         return self.controller.execute_step(
@@ -519,10 +617,19 @@ class DS_STAR_Agent:
             plan_length=len(plan)
         ).strip()
 
-    def _debug_code(self, code: str, error: str, data_desc: str, filenames: List[str]) -> str:
+    def _debug_code(
+        self,
+        code: str,
+        error: str,
+        data_desc: str,
+        filenames: List[str],
+        problem_context: str,
+    ) -> str:
         prompt = PROMPT_TEMPLATES["debugger"].format(
             summaries=data_desc, code=code,
-            bug=error, filenames=", ".join(filenames)
+            bug=error,
+            filenames=", ".join(filenames),
+            problem_context=problem_context,
         )
         
         result = self.controller.execute_step(
@@ -534,11 +641,22 @@ class DS_STAR_Agent:
         
         return self._extract_code_block(result)
 
-    def finalize_solution(self, code: str, result: str, query: str, 
-                        guidelines: str, data_desc: str) -> str:
+    def finalize_solution(
+        self,
+        code: str,
+        result: str,
+        query: str,
+        guidelines: str,
+        data_desc: str,
+        problem_context: str,
+    ) -> str:
         prompt = PROMPT_TEMPLATES["finalyzer"].format(
-            summaries=data_desc, code=code,
-            result=result, question=query, guidelines=guidelines
+            summaries=data_desc,
+            code=code,
+            result=result,
+            question=query,
+            guidelines=guidelines,
+            problem_context=problem_context,
         )
         
         result = self.controller.execute_step(
@@ -549,61 +667,76 @@ class DS_STAR_Agent:
         
         return self._extract_code_block(result)
 
-    def run_pipeline(self, query: str, data_files: List[str]) -> Dict[str, Any]:
+    def run_pipeline(self, query: str, data_files: Optional[List[str]]) -> Dict[str, Any]:
         """Main pipeline with full persistence and resume capability."""
         self.controller.logger.info(f"Starting pipeline: {self.config.run_id}")
         self.controller.logger.info(f"Query: {query}")
         self.controller.logger.info(f"Data files: {data_files}")
+        if data_files:
+            self.controller.logger.warning("Data files are ignored; analyzer is disabled.")
         
         # Check for resume state
         state = self.storage.get_current_state()
         if state["completed_steps"]:
             self.controller.logger.info(f"Resuming from step {state['current_step']}")
         
-        # Ensure data directory exists
-        Path(self.config.data_dir).mkdir(exist_ok=True)
-        
         # Initialize variables that might be loaded from previous runs
         code = None
         exec_result = None
         
-        # PHASE 1: Data Analysis
+        # Analyzer phase removed; data descriptions are empty by design.
+        data_descriptions = {}
+        absolute_data_files = []
+        data_desc_str = ""
+        
+        # PHASE 1: Iterative Planning & Execution
         if self.controller.should_execute_step(0):
-            self.controller.logger.info("=== PHASE 1: ANALYZING DATA FILES ===")
-            data_descriptions = {}
-            absolute_data_files = []
-            for i, f in enumerate(data_files):
-                self.controller.logger.info(f"Analyzing {f}...")
-                abs_path = str(Path(self.config.data_dir).joinpath(f).resolve())
-                absolute_data_files.append(abs_path)
-                analysis = self.analyze_data(abs_path)
-                data_descriptions[abs_path] = analysis["result"]
-            
-            state = self.storage.get_current_state()
-            state["data_descriptions"] = data_descriptions
-            self.storage.save_state(state)
-        else:
-            # Load from previous run
-            data_descriptions = state["data_descriptions"]
-            absolute_data_files = list(data_descriptions.keys())
-        
-        data_desc_str = "\n".join([f"File: {k}\n{v}" for k, v in data_descriptions.items()])
-        
-        # PHASE 2: Iterative Planning & Execution
-        if self.controller.should_execute_step(len(absolute_data_files)):
-            self.controller.logger.info("=== PHASE 2: ITERATIVE PLANNING & VERIFICATION ===")
+            self.controller.logger.info("=== PHASE 1: ITERATIVE PLANNING & VERIFICATION ===")
             plan = []
-            plan.append(self.plan_next_step(query, data_desc_str, plan, ""))
+            plan.append(
+                self.plan_next_step(
+                    query,
+                    data_desc_str,
+                    plan,
+                    "",
+                    problem_context=self.config.problem_context or "",
+                )
+            )
             
-            code = self.generate_code(plan, data_desc_str)
-            exec_result = self._execute_and_debug_code(code, absolute_data_files, data_desc_str)
+            code = self.generate_code(plan, data_desc_str, problem_context=self.config.problem_context or "")
+            if self.config.evaluator_runs_code:
+                exec_result, eval_result = self._execute_with_evaluator(
+                    code,
+                    absolute_data_files,
+                    data_desc_str,
+                    plan,
+                    query,
+                    problem_context=self.config.problem_context or "",
+                )
+            else:
+                exec_result = self._execute_and_debug_code(
+                    code,
+                    absolute_data_files,
+                    data_desc_str,
+                    problem_context=self.config.problem_context or "",
+                )
+                eval_result = None
             
             # Refinement rounds
             prev_eval_result = None
             for round_idx in range(self.config.max_refinement_rounds):
                 self.controller.logger.info(f"--- Refinement Round {round_idx+1} ---")
 
-                eval_result = self._evaluate_candidate(code, exec_result, plan, query, data_desc_str)
+                if not self.config.evaluator_runs_code:
+                    eval_result = self._evaluate_candidate(
+                        code,
+                        exec_result,
+                        plan,
+                        query,
+                        data_desc_str,
+                        data_files=absolute_data_files,
+                        problem_context=self.config.problem_context or "",
+                    )
                 if eval_result.get("parsed") and eval_result["parsed"].get("should_stop"):
                     self.controller.logger.info("Evaluator requested stop; proceeding to finalization.")
                     break
@@ -614,9 +747,10 @@ class DS_STAR_Agent:
                     exec_result,
                     query,
                     data_desc_str,
-                    eval_result=eval_result,
+                    eval_result=eval_result or {"raw_text": "", "parsed": None},
                     goals=self.config.verifier_goals,
                     prev_eval_result=prev_eval_result,
+                    problem_context=self.config.problem_context or "",
                 )
                 prev_eval_result = eval_result
                 
@@ -624,7 +758,13 @@ class DS_STAR_Agent:
                     self.controller.logger.info("Plan verified as sufficient!")
                     break
                 
-                routing = self.route_plan(plan, query, exec_result, data_desc_str)
+                routing = self.route_plan(
+                    plan,
+                    query,
+                    exec_result,
+                    data_desc_str,
+                    problem_context=self.config.problem_context or "",
+                )
                 
                 if "is wrong!" in routing:
                     # Truncate plan and retry
@@ -638,12 +778,39 @@ class DS_STAR_Agent:
                     self.controller.logger.info("Adding new step...")
                 
                 # Generate next step
-                next_plan = self.plan_next_step(query, data_desc_str, plan, exec_result)
+                next_plan = self.plan_next_step(
+                    query,
+                    data_desc_str,
+                    plan,
+                    exec_result,
+                    problem_context=self.config.problem_context or "",
+                )
                 plan.append(next_plan)
                 
                 # Generate and execute new code
-                code = self.generate_code(plan, data_desc_str, base_code=code)
-                exec_result = self._execute_and_debug_code(code, absolute_data_files, data_desc_str)
+                code = self.generate_code(
+                    plan,
+                    data_desc_str,
+                    base_code=code,
+                    problem_context=self.config.problem_context or "",
+                )
+                if self.config.evaluator_runs_code:
+                    exec_result, eval_result = self._execute_with_evaluator(
+                        code,
+                        absolute_data_files,
+                        data_desc_str,
+                        plan,
+                        query,
+                        problem_context=self.config.problem_context or "",
+                    )
+                else:
+                    exec_result = self._execute_and_debug_code(
+                        code,
+                        absolute_data_files,
+                        data_desc_str,
+                        problem_context=self.config.problem_context or "",
+                    )
+                    eval_result = None
             else:
                 self.controller.logger.warning("Max refinement rounds reached")
         
@@ -669,12 +836,30 @@ class DS_STAR_Agent:
         # PHASE 3: Finalization
         self.controller.logger.info("=== PHASE 3: FINALIZING ===")
         final_code = self.finalize_solution(
-            code, exec_result, query,
+            code,
+            exec_result,
+            query,
             "Format as JSON with key 'final_answer'",
-            data_desc_str
+            data_desc_str,
+            problem_context=self.config.problem_context or "",
         )
         
-        final_result = self._execute_and_debug_code(final_code, absolute_data_files, data_desc_str)
+        if self.config.evaluator_runs_code:
+            final_result, _ = self._execute_with_evaluator(
+                final_code,
+                absolute_data_files,
+                data_desc_str,
+                plan if "plan" in locals() else [],
+                query,
+                problem_context=self.config.problem_context or "",
+            )
+        else:
+            final_result = self._execute_and_debug_code(
+                final_code,
+                absolute_data_files,
+                data_desc_str,
+                problem_context=self.config.problem_context or "",
+            )
         
         # Save final output
         output_file = self.storage.run_dir / "final_output" / "result.json"
@@ -723,6 +908,9 @@ def main():
         'evaluator': config_defaults.get('evaluator'),
         'evaluator_kwargs': config_defaults.get('evaluator_kwargs'),
         'verifier_goals': config_defaults.get('verifier_goals'),
+        'problem_context': config_defaults.get('problem_context'),
+        'evaluator_runs_code': config_defaults.get('evaluator_runs_code', False),
+        'evaluator_python': config_defaults.get('evaluator_python'),
     }
     
     # Filter out None values so dataclass defaults are used
@@ -743,8 +931,8 @@ def main():
     query = args.query or config_defaults.get('query')
     data_files = args.data_files or config_defaults.get('data_files')
 
-    if not (data_files and query):
-        parser.error("--data-files and --query are required for a new run.")
+    if not query:
+        parser.error("--query is required for a new run.")
 
     # Run pipeline
     result = agent.run_pipeline(query, data_files)
