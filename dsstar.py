@@ -39,6 +39,7 @@ class DSConfig:
     agent_models: Dict[str, str] = field(default_factory=dict)
     evaluator: Optional[str] = None
     evaluator_kwargs: Dict[str, Any] = field(default_factory=dict)
+    verifier_goals: Optional[str] = None
     
     def __post_init__(self):
         if self.run_id is None:
@@ -377,6 +378,21 @@ class DS_STAR_Agent:
             self.controller.logger.fatal(f"Execution error: {error}")
         return exec_result
 
+    def _normalize_eval_result(self, eval_result: Any) -> Dict[str, Any]:
+        if isinstance(eval_result, dict):
+            return {
+                "raw_text": json.dumps(eval_result, ensure_ascii=True),
+                "parsed": eval_result,
+            }
+        if isinstance(eval_result, str):
+            parsed = None
+            try:
+                parsed = json.loads(eval_result)
+            except Exception:
+                parsed = None
+            return {"raw_text": eval_result, "parsed": parsed}
+        return {"raw_text": str(eval_result), "parsed": None}
+
     def _evaluate_candidate(self, code: str, result: str, plan: List[str], query: str, data_desc: str) -> Dict[str, Any]:
         context = {
             "code": code,
@@ -386,10 +402,11 @@ class DS_STAR_Agent:
             "data_desc": data_desc,
         }
         try:
-            return self.evaluator.evaluate(context)
+            eval_result = self.evaluator.evaluate(context)
+            return self._normalize_eval_result(eval_result)
         except Exception as e:
             self.controller.logger.error(f"Evaluator error: {e}")
-            return {"should_stop": False, "score": None, "feedback": ""}
+            return {"raw_text": "", "parsed": None}
 
 
     def analyze_data(self, filename: str) -> Dict[str, str]:
@@ -450,10 +467,33 @@ class DS_STAR_Agent:
         
         return self._extract_code_block(result)
 
-    def verify_plan(self, plan: List[str], code: str, result: str, query: str, data_desc: str) -> str:
+    def verify_plan(
+        self,
+        plan: List[str],
+        code: str,
+        result: str,
+        query: str,
+        data_desc: str,
+        eval_result: Dict[str, Any],
+        goals: Optional[str],
+        prev_eval_result: Optional[Dict[str, Any]] = None,
+    ) -> str:
         plan_str = "\n".join(f"{i+1}. {step}" for i, step in enumerate(plan))
+        goals_str = goals or "No explicit goals provided."
+        eval_text = eval_result.get("raw_text", "")
+        prev_eval_text = ""
+        if prev_eval_result:
+            prev_eval_text = prev_eval_result.get("raw_text", "")
         prompt = PROMPT_TEMPLATES["verifier"].format(
-            plan=plan_str, code=code, result=result, question=query, summaries=data_desc, current_step=plan[-1]
+            plan=plan_str,
+            code=code,
+            result=result,
+            question=query,
+            summaries=data_desc,
+            current_step=plan[-1],
+            goals=goals_str,
+            eval_result=eval_text,
+            prev_eval_result=prev_eval_text,
         )
         
         return self.controller.execute_step(
@@ -557,15 +597,26 @@ class DS_STAR_Agent:
             exec_result = self._execute_and_debug_code(code, absolute_data_files, data_desc_str)
             
             # Refinement rounds
+            prev_eval_result = None
             for round_idx in range(self.config.max_refinement_rounds):
                 self.controller.logger.info(f"--- Refinement Round {round_idx+1} ---")
 
                 eval_result = self._evaluate_candidate(code, exec_result, plan, query, data_desc_str)
-                if eval_result.get("should_stop"):
+                if eval_result.get("parsed") and eval_result["parsed"].get("should_stop"):
                     self.controller.logger.info("Evaluator requested stop; proceeding to finalization.")
                     break
 
-                verdict = self.verify_plan(plan, code, exec_result, query, data_desc_str)
+                verdict = self.verify_plan(
+                    plan,
+                    code,
+                    exec_result,
+                    query,
+                    data_desc_str,
+                    eval_result=eval_result,
+                    goals=self.config.verifier_goals,
+                    prev_eval_result=prev_eval_result,
+                )
+                prev_eval_result = eval_result
                 
                 if verdict.lower() == "yes":
                     self.controller.logger.info("Plan verified as sufficient!")
@@ -666,7 +717,10 @@ def main():
         'interactive': args.interactive or config_defaults.get('interactive', False),
         'max_refinement_rounds': args.max_rounds or config_defaults.get('max_refinement_rounds', 5),
         'model_name': config_defaults.get('model_name'),
-        'preserve_artifacts': config_defaults.get('preserve_artifacts', True)
+        'preserve_artifacts': config_defaults.get('preserve_artifacts', True),
+        'evaluator': config_defaults.get('evaluator'),
+        'evaluator_kwargs': config_defaults.get('evaluator_kwargs'),
+        'verifier_goals': config_defaults.get('verifier_goals'),
     }
     
     # Filter out None values so dataclass defaults are used

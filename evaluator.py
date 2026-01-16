@@ -6,13 +6,13 @@ from typing import Any, Dict, Optional, Protocol
 
 class Evaluator(Protocol):
     def evaluate(self, context: Dict[str, Any]) -> Dict[str, Any]:
-        """Return a dict that may include should_stop, score, feedback."""
+        """Return a JSON-serializable dict or JSON string with evaluation details."""
         ...
 
 
 class NoopEvaluator:
     def evaluate(self, context: Dict[str, Any]) -> Dict[str, Any]:
-        return {"should_stop": False, "score": None, "feedback": ""}
+        return {"score": None, "metrics": {}, "feedback": ""}
 
 
 def load_evaluator(path: Optional[str], kwargs: Optional[Dict[str, Any]] = None) -> Evaluator:
