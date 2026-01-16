@@ -6,7 +6,7 @@ problem_context: |
   This is a toy run. The evaluator executes the generated code and accepts either
   strict JSON output with a "value" key or a plain numeric stdout. The goal is to print 42.
 evaluator_runs_code: true
-evaluator: "examples/toy_evaluator.py:ToyEvaluator"
+evaluator: "examples/toy_demo/toy_evaluator.py:ToyEvaluator"
 evaluator_kwargs:
   target: 42
   tolerance: 0.5

@@ -886,7 +886,7 @@ def main():
     parser.add_argument("--interactive", action="store_true", help="Pause between steps")
     parser.add_argument("--edit-last", action="store_true", help="Edit last generated code")
     parser.add_argument("--data-files", nargs="+", help="Data files to analyze")
-    parser.add_argument("--query", type=str, help="Analysis query")
+    parser.add_argument("--query", type=str, help="Deprecated: use query in config YAML instead")
     parser.add_argument("--max-rounds", type=int, help="Max refinement rounds")
     parser.add_argument("--config", type=str, help="Path to config file", default="config.yaml")
     args = parser.parse_args()
@@ -928,11 +928,13 @@ def main():
         return
 
     # Check for required arguments for a new run
+    if args.query:
+        print("Warning: --query is deprecated; define 'query' in the config YAML instead.")
     query = args.query or config_defaults.get('query')
     data_files = args.data_files or config_defaults.get('data_files')
 
     if not query:
-        parser.error("--query is required for a new run.")
+        parser.error("Query is required in the config YAML for a new run.")
 
     # Run pipeline
     result = agent.run_pipeline(query, data_files)

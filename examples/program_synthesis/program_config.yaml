@@ -1,0 +1,14 @@
+model_name: "gemini-2.5-flash"
+max_refinement_rounds: 6
+preserve_artifacts: true
+query: "Write code that checks whether a list of integers is strictly increasing with no duplicates."
+problem_context: |
+  Read a single line from stdin. The line is a comma-separated list of integers.
+  Output strict JSON: {"is_sorted_unique": true|false} and nothing else.
+  An empty line means an empty list, which should return true.
+evaluator_runs_code: true
+evaluator: "examples/program_synthesis/program_evaluator.py:ProgramSynthesisEvaluator"
+evaluator_kwargs:
+  expected_key: "is_sorted_unique"
+verifier_goals: |
+  Pass all hidden tests. Prefer correctness over brevity.

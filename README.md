@@ -1,33 +1,56 @@
-# DS-STAR: A Data Science Agentic Framework
+# GO-STAR: A General Optimization Agentic Framework
 
-DS-STAR (Data Science - Structured Thought and Action) is a Python-based agentic framework for automating data science tasks. It leverages a multi-agent system powered by Google's Gemini models to analyze data, devise a plan, write and execute code, and iteratively refine the solution to answer a user's query.
+GO-STAR is built off of the DS-STAR self-improving agent that can generally solve and optimize problems rather than the original DS-STAR constraint of answering data science queries.
 
-This project is an implementation of the paper from Google Research: [DS-STAR: A State-of-the-Art Versatile Data Science Agent](https://research.google/blog/ds-star-a-state-of-the-art-versatile-data-science-agent/). [Paper](https://arxiv.org/pdf/2509.21825)
+You can read about the original DS-STAR agent here: [DS-STAR: A State-of-the-Art Versatile Data Science Agent](https://research.google/blog/ds-star-a-state-of-the-art-versatile-data-science-agent/). [Paper](https://arxiv.org/pdf/2509.21825)
 
 ## Features
 
-- **Agentic Workflow**: Implements a pipeline of specialized AI agents (Analyzer, Planner, Coder, Verifier, Router, Debugger, Finalyzer) that collaborate to solve data science problems.
+- **Agentic Workflow**: Implements a pipeline of specialized AI agents (Planner, Coder, Verifier, Router, Debugger, Finalyzer) that collaborate to solve and optimize problems.
 - **Reproducibility**: Every step of the pipeline is saved, including prompts, generated code, execution results, and metadata. This allows for complete auditability and reproducibility of results.
 - **Interactive & Resume-able**: Runs can be paused and resumed. The interactive mode allows for step-by-step execution.
 - **Code Editing & Debugging**: Allows users to manually edit the generated code during a run and features an auto-debug agent to fix execution errors.
-- **Configuration-driven**: Project settings, model parameters, and run configurations are managed through a `config.yaml` file.
+- **Configuration-driven**: Project settings, model parameters, evaluator, and run configurations are managed through a `config.yaml` file.
 
 ## How it Works
 
-The DS-STAR pipeline is composed of several phases and agents:
+The GO-STAR pipeline is composed of several phases and agents:
 
-1.  **Analysis**: The `Analyzer` agent inspects the initial data files and generates summaries.
-2.  **Iterative Planning & Execution**:
-    *   The `Planner` creates an initial plan to address the user's query.
+1.  **Iterative Planning & Execution**:
+    *   The `Planner` creates an initial plan to address the task.
     *   The `Coder` generates Python code to execute the current step of the plan.
-    *   The code is executed, and the result is captured.
+    *   The code is executed, and the result is captured (either by the evaluator or the default runtime).
     *   An automatic `Debugger` agent attempts to fix any code that fails.
-    *   The `Verifier` checks if the result sufficiently answers the query.
+    *   The `Verifier` checks if the result sufficiently aligns with the goals.
     *   The `Router` decides what to do next: either finalize the plan or add a new step for refinement.
     *   This loop continues until the plan is deemed sufficient or the maximum number of refinement rounds is reached.
-3.  **Finalization**: The `Finalyzer` agent takes the final code and results and formats them into a clean, specified output format (e.g., JSON).
+2.  **Finalization**: The `Finalyzer` agent takes the final code and results and formats them into a clean, specified output format (e.g., JSON).
 
 All artifacts for each run are stored in the `runs/` directory, organized by `run_id`.
+
+## Evaluator Pattern
+
+GO-STAR uses an evaluator to score candidate solutions and decide when to stop refining.
+The evaluator can optionally execute the generated code itself and return structured
+JSON metrics, which the Verifier uses to judge progress against your goals.
+
+Key config options:
+- `query`: the task description (required in config YAML).
+- `problem_context`: extra constraints and output format requirements.
+- `evaluator`: import path or file path to the evaluator class.
+- `evaluator_kwargs`: constructor args for the evaluator.
+- `evaluator_runs_code`: if true, evaluator executes code and provides stdout/metrics.
+- `evaluator_python`: optional Python executable for evaluator-run code.
+
+Example (program synthesis):
+```yaml
+query: "Write code that checks whether a list of integers is strictly increasing."
+problem_context: |
+  Read a single line from stdin. Output strict JSON:
+  {"is_sorted_unique": true|false}
+evaluator_runs_code: true
+evaluator: "examples/program_synthesis/program_evaluator.py:ProgramSynthesisEvaluator"
+```
 
 ## Project Structure
 
@@ -35,10 +58,11 @@ All artifacts for each run are stored in the `runs/` directory, organized by `ru
 /
 ├─── src/ds_star/            # Package source (agent logic, CLI, prompts)
 ├─── config.yaml             # Main configuration file
+├─── examples/               # Runnable toy examples and evaluators
+├─── tests/                  # Test suite
 ├─── pyproject.toml          # Project metadata and dependencies (uv format)
 ├─── uv.lock                 # Locked dependency versions for reproducibility
 ├─── .python-version         # Python version specification for uv
-├─── data/                   # Directory for your data files
 └─── runs/                   # Directory where all experiment runs and artifacts are stored
 ```
 
@@ -98,15 +122,13 @@ All artifacts for each run are stored in the `runs/` directory, organized by `ru
 
 ## Usage
 
-Place your data files (e.g., `.xlsx`, `.csv`) in the `data/` directory.
-
 ### Starting a New Run
 
-To start a new analysis, you need to provide the data files and a query.
+Define the task in your config YAML and run with `--config`.
 
 Using uv:
 ```bash
-uv run dsstar --data-files file1.xlsx file2.xlsx --query "What is the total sales for each department?"
+uv run dsstar --config examples/program_synthesis/program_config.yaml
 ```
 
 ### Resuming a Run
@@ -131,7 +153,7 @@ This will open the last code file in your default text editor (`nano`, `vim`, et
 To review each step before proceeding, use the interactive flag.
 
 ```bash
-uv run dsstar --interactive --data-files ... --query "..."
+uv run dsstar --interactive --query "..."
 ```
 
 ## UV Package Manager
@@ -165,9 +187,14 @@ The following options are available in `config.yaml` and can be overridden by CL
 - `interactive` (bool): If true, waits for user input before executing each step.
 - `auto_debug` (bool): If true, the `Debugger` agent will automatically try to fix failing code.
 - `execution_timeout` (int): Timeout in seconds for code execution.
-- `execution_timeout` (int): Timeout in seconds for code execution.
 - `preserve_artifacts` (bool): If true, all step artifacts are saved to the `runs` directory.
 - `agent_models` (dict): A dictionary mapping agent names (e.g., `PLANNER`, `CODER`) to specific model names. If not specified, `model_name` is used.
+- `problem_context` (string): Optional per-run context passed to every agent.
+- `verifier_goals` (string): Optional goals used by the verifier.
+- `evaluator` (string): Evaluator import path or file path (e.g., `examples/toy_demo/toy_evaluator.py:ToyEvaluator`).
+- `evaluator_kwargs` (dict): Keyword args passed to the evaluator constructor.
+- `evaluator_runs_code` (bool): If true, the evaluator executes generated code and returns stdout + metrics.
+- `evaluator_python` (string): Optional Python executable for evaluator-run code.
 
 ## Providers
 
