@@ -1,5 +1,7 @@
 # GO-STAR: A General Optimization Agentic Framework
 
+![gostar](img/gostar.jpeg)
+
 GO-STAR is built off of the DS-STAR self-improving agent that can generally solve and optimize problems rather than the original DS-STAR constraint of answering data science queries.
 
 You can read about the original DS-STAR agent here: [DS-STAR: A State-of-the-Art Versatile Data Science Agent](https://research.google/blog/ds-star-a-state-of-the-art-versatile-data-science-agent/). [Paper](https://arxiv.org/pdf/2509.21825)
