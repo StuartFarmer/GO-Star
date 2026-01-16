@@ -11,6 +11,7 @@ import yaml
 from dataclasses import dataclass, asdict, field
 from datetime import datetime
 from provider import ModelProvider, GeminiProvider, OllamaProvider, OpenAIProvider
+from evaluator import load_evaluator
 
 # =============================================================================
 # CONFIGURATION & PROMPT TEMPLATES
@@ -36,12 +37,16 @@ class DSConfig:
     data_dir: str = "data"
     code_library_dir: str = "code_library"
     agent_models: Dict[str, str] = field(default_factory=dict)
+    evaluator: Optional[str] = None
+    evaluator_kwargs: Dict[str, Any] = field(default_factory=dict)
     
     def __post_init__(self):
         if self.run_id is None:
             self.run_id = datetime.now().strftime("%Y%m%d_%H%M%S") + f"_{uuid.uuid4().hex[:6]}"
         if self.agent_models is None:
             self.agent_models = {}
+        if self.evaluator_kwargs is None:
+            self.evaluator_kwargs = {}
 
 
 
@@ -264,7 +269,8 @@ class DS_STAR_Agent:
         # Setup execution environment
         self.exec_dir = Path(config.runs_dir) / config.run_id / "exec_env"
         self.exec_dir.mkdir(exist_ok=True)
-        
+
+        self.evaluator = load_evaluator(config.evaluator, config.evaluator_kwargs)
         self._setup_tee_logging()
         
     def _setup_tee_logging(self):
@@ -370,6 +376,20 @@ class DS_STAR_Agent:
         if error:
             self.controller.logger.fatal(f"Execution error: {error}")
         return exec_result
+
+    def _evaluate_candidate(self, code: str, result: str, plan: List[str], query: str, data_desc: str) -> Dict[str, Any]:
+        context = {
+            "code": code,
+            "result": result,
+            "plan": plan,
+            "query": query,
+            "data_desc": data_desc,
+        }
+        try:
+            return self.evaluator.evaluate(context)
+        except Exception as e:
+            self.controller.logger.error(f"Evaluator error: {e}")
+            return {"should_stop": False, "score": None, "feedback": ""}
 
 
     def analyze_data(self, filename: str) -> Dict[str, str]:
@@ -539,7 +559,12 @@ class DS_STAR_Agent:
             # Refinement rounds
             for round_idx in range(self.config.max_refinement_rounds):
                 self.controller.logger.info(f"--- Refinement Round {round_idx+1} ---")
-                
+
+                eval_result = self._evaluate_candidate(code, exec_result, plan, query, data_desc_str)
+                if eval_result.get("should_stop"):
+                    self.controller.logger.info("Evaluator requested stop; proceeding to finalization.")
+                    break
+
                 verdict = self.verify_plan(plan, code, exec_result, query, data_desc_str)
                 
                 if verdict.lower() == "yes":
